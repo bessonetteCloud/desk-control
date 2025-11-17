@@ -19,7 +19,6 @@ pub trait MenuCallback: Send + Sync {
 /// Cross-platform system tray application
 pub struct TrayApp {
     _tray_icon: TrayIcon,
-    menu_rx: std::sync::mpsc::Receiver<MenuEvent>,
     callback: Arc<dyn MenuCallback>,
     preset_items: Vec<(DrinkSize, MenuItem)>,
     configure_desk_item: MenuItem,
@@ -80,12 +79,8 @@ impl TrayApp {
             .with_icon(icon)
             .build()?;
 
-        // Get the menu event receiver
-        let menu_rx = MenuEvent::receiver();
-
         Ok(Self {
             _tray_icon: tray_icon,
-            menu_rx,
             callback,
             preset_items,
             configure_desk_item,
@@ -96,11 +91,12 @@ impl TrayApp {
 
     /// Process menu events (call this in your event loop)
     pub fn process_events(&self) {
-        while let Ok(event) = self.menu_rx.try_recv() {
+        let menu_rx = MenuEvent::receiver();
+        while let Ok(event) = menu_rx.try_recv() {
             let item_id = event.id;
 
             // Check if it's a preset item
-            if let Some((preset, _)) = self.preset_items.iter().find(|(_, item)| item.id() == item_id) {
+            if let Some((preset, _)) = self.preset_items.iter().find(|(_, item)| item_id == item.id()) {
                 self.callback.on_preset_selected(*preset);
                 continue;
             }

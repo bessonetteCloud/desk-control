@@ -3,6 +3,7 @@ mod desk;
 mod ui;
 
 use anyhow::Result;
+use btleplug::api::Peripheral;
 use config::{Config, DrinkSize};
 use desk::DeskController;
 use std::sync::{Arc, Mutex};
