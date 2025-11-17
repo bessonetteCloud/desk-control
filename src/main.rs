@@ -6,9 +6,9 @@ use anyhow::Result;
 use config::{Config, DrinkSize};
 use desk::DeskController;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-#[cfg(target_os = "macos")]
-use ui::{MenuBarApp, MenuCallback};
+use ui::{TrayApp, MenuCallback};
 
 /// Application state shared between UI and background tasks
 struct AppState {
@@ -186,17 +186,50 @@ fn show_info_dialog(message: &str) {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Show an error notification (Linux)
+#[cfg(target_os = "linux")]
+fn show_error_dialog(message: &str) {
+    use notify_rust::Notification;
+
+    if let Err(e) = Notification::new()
+        .summary("Desk Control Error")
+        .body(message)
+        .urgency(notify_rust::Urgency::Critical)
+        .timeout(5000)
+        .show()
+    {
+        log::error!("Failed to show notification: {}", e);
+        eprintln!("Error: {}", message);
+    }
+}
+
+/// Show an info notification (Linux)
+#[cfg(target_os = "linux")]
+fn show_info_dialog(message: &str) {
+    use notify_rust::Notification;
+
+    if let Err(e) = Notification::new()
+        .summary("Desk Control")
+        .body(message)
+        .urgency(notify_rust::Urgency::Normal)
+        .timeout(3000)
+        .show()
+    {
+        log::error!("Failed to show notification: {}", e);
+        println!("Info: {}", message);
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn show_error_dialog(message: &str) {
     eprintln!("Error: {}", message);
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn show_info_dialog(message: &str) {
     println!("Info: {}", message);
 }
 
-#[cfg(target_os = "macos")]
 fn main() -> Result<()> {
     // Initialize logging
     env_logger::Builder::from_default_env()
@@ -224,18 +257,14 @@ fn main() -> Result<()> {
         runtime,
     });
 
-    // Create and run menu bar app
-    let _app = MenuBarApp::new(config, callback);
+    // Create tray app
+    let tray_app = TrayApp::new(config, callback)?;
 
-    log::info!("Menu bar app started");
+    log::info!("System tray app started");
 
-    MenuBarApp::run();
-
-    Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn main() {
-    eprintln!("This application is only supported on macOS");
-    std::process::exit(1);
+    // Event loop to process tray events
+    loop {
+        tray_app.process_events();
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
