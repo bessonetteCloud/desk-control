@@ -1,0 +1,32 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Debug files
+*.dSYM/
+
+# Environment
+.env
