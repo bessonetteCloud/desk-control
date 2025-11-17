@@ -1,10 +1,14 @@
 # Desk Control
 
-A macOS menu bar application to control Linak Bluetooth Low Energy standing desks with Starbucks-themed height presets.
+A cross-platform system tray application to control Linak Bluetooth Low Energy standing desks with Starbucks-themed height presets.
+
+Supports **macOS** and **Linux** (including Wayland).
 
 ## Features
 
-- **macOS Menu Bar Integration**: Lives in your menu bar for quick access
+- **Cross-Platform System Tray**: Lives in your system tray/notification area for quick access
+  - macOS: Menu bar integration
+  - Linux: System tray with Wayland and X11 support
 - **Starbucks Drink Size Presets**: Configure 4 height presets themed as coffee sizes:
   - ☕ **Short** - Typically sitting height (~65cm)
   - 🥤 **Tall** - Mid-level height (~85cm)
@@ -13,17 +17,83 @@ A macOS menu bar application to control Linak Bluetooth Low Energy standing desk
 - **Bluetooth LE Control**: Direct communication with Linak desk motors
 - **Persistent Configuration**: Settings saved to `~/.desk-control/config`
 - **Auto-reconnect**: Automatically connects to your configured desk
+- **Native Notifications**: Desktop notifications on both macOS and Linux
 
 ## Requirements
 
-- macOS (tested on macOS 10.15+)
+### General
 - Bluetooth LE support
 - Rust 1.70+ (for building from source)
 - A Linak-compatible standing desk (e.g., DPG series)
 
+### Platform-Specific
+
+#### macOS
+- macOS 10.15+
+
+#### Linux (Arch, Ubuntu, Fedora, etc.)
+- Bluetooth daemon (`bluez`)
+- D-Bus
+- System tray support:
+  - **Wayland**: Compositor with system tray support (GNOME with AppIndicator extension, KDE Plasma, Sway, etc.)
+  - **X11**: Any desktop environment with system tray
+- libayatana-appindicator3 (or libappindicator3)
+- notification daemon (for desktop notifications)
+
 ## Installation
 
-### Building from Source
+### Linux (Arch Linux)
+
+#### Install System Dependencies
+
+```bash
+# On Arch Linux - Runtime and build dependencies
+sudo pacman -S bluez bluez-utils libappindicator-gtk3 dbus gtk3 pkg-config
+
+# Start and enable Bluetooth service
+sudo systemctl start bluetooth
+sudo systemctl enable bluetooth
+
+# Add your user to the bluetooth group
+sudo usermod -a -G bluetooth $USER
+# Log out and back in for group changes to take effect
+```
+
+**For other distributions:**
+
+Ubuntu/Debian:
+```bash
+sudo apt install bluez libbluetooth-dev libdbus-1-dev libappindicator3-dev libgtk-3-dev pkg-config
+```
+
+Fedora:
+```bash
+sudo dnf install bluez bluez-libs-devel dbus-devel libappindicator-gtk3-devel gtk3-devel pkgconf-pkg-config
+```
+
+For **GNOME on Wayland**, install the AppIndicator extension:
+```bash
+# Install GNOME Shell extension for AppIndicator support
+yay -S gnome-shell-extension-appindicator
+# Or install via https://extensions.gnome.org/extension/615/appindicator-support/
+```
+
+#### Build from Source
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd desk-control
+
+# Build the project
+cargo build --release
+
+# The binary will be at target/release/desk-control
+```
+
+### macOS
+
+#### Build from Source
 
 ```bash
 # Clone the repository
@@ -48,7 +118,9 @@ Or run the compiled binary:
 ./target/release/desk-control
 ```
 
-The app will appear in your macOS menu bar as a chair icon (🪑).
+The app will appear in your system tray:
+- **macOS**: Menu bar with a blue circle icon
+- **Linux**: System tray with a blue circle icon
 
 ## Configuration
 
@@ -114,24 +186,57 @@ Heights are transmitted in 0.1mm units (e.g., 10500 = 1050mm = 105cm).
 
 ### Dependencies
 
+**Cross-platform:**
 - `btleplug` - Bluetooth LE communication
 - `tokio` - Async runtime
-- `cocoa` / `objc` - macOS UI framework bindings
+- `tray-icon` - Cross-platform system tray
 - `serde` / `serde_json` - Configuration serialization
+
+**macOS-specific:**
+- `cocoa` / `objc` - macOS UI framework bindings
+
+**Linux-specific:**
+- `notify-rust` - Desktop notifications
 
 ## Troubleshooting
 
 ### Desk Not Found
 
-- Ensure your desk is powered on and Bluetooth is enabled on your Mac
+- Ensure your desk is powered on and Bluetooth is enabled
 - Make sure you're not connected to the desk from another application
 - Try the "Configure Desk..." option to rescan
 
 ### Permission Issues
 
-On macOS, you may need to grant Bluetooth permissions:
+**On macOS:**
 1. Go to System Preferences → Security & Privacy → Privacy → Bluetooth
 2. Ensure the application has permission
+
+**On Linux:**
+- Ensure your user is in the `bluetooth` group: `groups | grep bluetooth`
+- If not, add yourself: `sudo usermod -a -G bluetooth $USER` (then log out and back in)
+- Ensure the Bluetooth service is running: `sudo systemctl status bluetooth`
+- Check permissions: `ls -l /dev/rfkill` (you may need to add udev rules)
+
+### System Tray Not Visible (Linux)
+
+**GNOME on Wayland:**
+- Install the AppIndicator extension: https://extensions.gnome.org/extension/615/appindicator-support/
+- Enable it in GNOME Extensions app
+
+**KDE Plasma:**
+- Right-click on the panel → Configure Panel → Add Widgets → System Tray
+- Ensure "Status Notifier Items" is enabled
+
+**Sway/i3:**
+- Ensure you have a status bar configured (waybar, i3status, etc.)
+- Add system tray module to your bar configuration
+
+### Notifications Not Working (Linux)
+
+- Ensure a notification daemon is running
+- For GNOME: Should work out of the box
+- For other WMs: Install `dunst`, `mako`, or similar notification daemon
 
 ### Connection Timeouts
 
