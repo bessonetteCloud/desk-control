@@ -6,8 +6,9 @@ use anyhow::Result;
 use btleplug::api::Peripheral;
 use config::{Config, DrinkSize};
 use desk::DeskController;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 use ui::{TrayApp, MenuCallback};
 
@@ -27,11 +28,11 @@ impl AppState {
 
     /// Ensure we're connected to the desk
     async fn ensure_connected(&self) -> Result<()> {
-        let mut controller = self.desk_controller.lock().unwrap();
+        let mut controller = self.desk_controller.lock().await;
 
         if controller.is_none() {
             log::info!("Connecting to desk...");
-            let config = self.config.lock().unwrap();
+            let config = self.config.lock().await;
             let desk_address = config.desk_address.clone();
             drop(config); // Release lock before async operation
 
@@ -47,13 +48,13 @@ impl AppState {
     async fn move_to_preset(&self, preset: DrinkSize) -> Result<()> {
         self.ensure_connected().await?;
 
-        let config = self.config.lock().unwrap();
+        let config = self.config.lock().await;
         let height_mm = config.get_preset(preset);
         drop(config);
 
         log::info!("Moving to {} preset ({}mm)", preset.name(), height_mm);
 
-        let controller = self.desk_controller.lock().unwrap();
+        let controller = self.desk_controller.lock().await;
         if let Some(desk) = controller.as_ref() {
             desk.move_to_height(height_mm).await?;
             log::info!("Successfully moved to {} preset", preset.name());
@@ -138,14 +139,14 @@ async fn scan_and_configure_desk(state: Arc<AppState>) -> Result<()> {
     };
 
     // Update config with desk address
-    let mut config = state.config.lock().unwrap();
+    let mut config = state.config.lock().await;
     config.desk_address = Some(address.clone());
     config.save()?;
 
     log::info!("Configured desk: {}", address);
 
     // Clear existing controller to force reconnect
-    let mut controller = state.desk_controller.lock().unwrap();
+    let mut controller = state.desk_controller.lock().await;
     *controller = None;
 
     Ok(())
