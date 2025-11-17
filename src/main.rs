@@ -240,6 +240,15 @@ fn main() -> Result<()> {
 
     log::info!("Starting Desk Control application");
 
+    // Initialize GTK on Linux (required by tray-icon)
+    #[cfg(target_os = "linux")]
+    {
+        if let Err(e) = gtk::init() {
+            anyhow::bail!("Failed to initialize GTK: {}", e);
+        }
+        log::info!("GTK initialized successfully");
+    }
+
     // Load configuration
     let config = Config::load()?;
     log::info!("Configuration loaded");
