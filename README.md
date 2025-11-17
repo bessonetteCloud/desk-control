@@ -35,9 +35,10 @@ Supports **macOS** and **Linux** (including Wayland).
 - Bluetooth daemon (`bluez`)
 - D-Bus
 - System tray support:
-  - **Wayland**: Compositor with system tray support (GNOME with AppIndicator extension, KDE Plasma, Sway, etc.)
+  - **Wayland**: Compositor with system tray support (GNOME with AppIndicator extension, KDE Plasma, Waybar, Sway, etc.)
   - **X11**: Any desktop environment with system tray
-- libayatana-appindicator3 (or libappindicator3)
+- **libayatana-appindicator3** (or libappindicator3) - Required for system tray to work, especially on Wayland/Waybar
+- **gtk3** - Required for libappindicator support
 - notification daemon (for desktop notifications)
 
 ## Installation
@@ -49,6 +50,9 @@ Supports **macOS** and **Linux** (including Wayland).
 ```bash
 # On Arch Linux - Runtime and build dependencies
 sudo pacman -S bluez bluez-utils libappindicator-gtk3 dbus gtk3 pkg-config
+
+# For Waybar users, ensure waybar is installed
+sudo pacman -S waybar
 
 # Start and enable Bluetooth service
 sudo systemctl start bluetooth
@@ -189,7 +193,7 @@ Heights are transmitted in 0.1mm units (e.g., 10500 = 1050mm = 105cm).
 **Cross-platform:**
 - `btleplug` - Bluetooth LE communication
 - `tokio` - Async runtime
-- `tray-icon` - Cross-platform system tray
+- `tray-icon` - Cross-platform system tray (uses libappindicator on Linux for Wayland/Waybar support)
 - `serde` / `serde_json` - Configuration serialization
 
 **macOS-specific:**
@@ -197,6 +201,7 @@ Heights are transmitted in 0.1mm units (e.g., 10500 = 1050mm = 105cm).
 
 **Linux-specific:**
 - `notify-rust` - Desktop notifications
+- `gtk` - GTK3 bindings for libappindicator support
 
 ## Troubleshooting
 
@@ -228,7 +233,18 @@ Heights are transmitted in 0.1mm units (e.g., 10500 = 1050mm = 105cm).
 - Right-click on the panel → Configure Panel → Add Widgets → System Tray
 - Ensure "Status Notifier Items" is enabled
 
-**Sway/i3:**
+**Sway/i3 with Waybar:**
+- Ensure Waybar is configured with a system tray module
+- Add to your `~/.config/waybar/config`:
+  ```json
+  "tray": {
+      "icon-size": 21,
+      "spacing": 10
+  }
+  ```
+- Restart Waybar after configuration changes
+
+**Other Wayland compositors:**
 - Ensure you have a status bar configured (waybar, i3status, etc.)
 - Add system tray module to your bar configuration
 
