@@ -62,6 +62,34 @@ impl AppState {
 
         Ok(())
     }
+
+    /// Attempt to connect to desk on startup and get current height
+    async fn connect_on_startup(&self) -> Result<()> {
+        log::info!("Attempting to connect to desk on startup...");
+
+        // Try to connect
+        if let Err(e) = self.ensure_connected().await {
+            log::warn!("Could not connect to desk on startup: {}", e);
+            return Err(e);
+        }
+
+        // Get and log current height
+        let controller = self.desk_controller.lock().await;
+        if let Some(desk) = controller.as_ref() {
+            match desk.get_height().await {
+                Ok(height_mm) => {
+                    log::info!("Successfully connected! Current desk height: {}mm ({:.1}cm)",
+                              height_mm, height_mm as f32 / 10.0);
+                }
+                Err(e) => {
+                    log::warn!("Connected to desk but could not read height: {}", e);
+                    return Err(e);
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Menu callback implementation
@@ -268,6 +296,18 @@ fn main() -> Result<()> {
 
     // Create application state
     let state = Arc::new(AppState::new(config.clone()));
+
+    // Attempt to connect to desk on startup
+    {
+        let state_clone = Arc::clone(&state);
+        let runtime_clone = Arc::clone(&runtime);
+        runtime_clone.spawn(async move {
+            if let Err(e) = state_clone.connect_on_startup().await {
+                log::warn!("Startup connection failed: {}", e);
+                log::info!("Will retry connection when first preset is selected");
+            }
+        });
+    }
 
     // Create menu callback
     let callback = Arc::new(AppMenuCallback {
