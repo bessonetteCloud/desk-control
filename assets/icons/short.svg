@@ -1,0 +1,9 @@
+<svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+  <!-- Small coffee cup -->
+  <path d="M8 12 L8 24 C8 25.1 8.9 26 10 26 L22 26 C23.1 26 24 25.1 24 24 L24 12 Z" fill="#8B4513" stroke="#5D2E0F" stroke-width="1.5"/>
+  <rect x="7" y="10" width="18" height="3" rx="1" fill="#5D2E0F"/>
+  <!-- Steam -->
+  <path d="M12 6 Q12 4 13 4 T13 6" stroke="#999" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <path d="M16 5 Q16 3 17 3 T17 5" stroke="#999" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <path d="M20 6 Q20 4 21 4 T21 6" stroke="#999" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+</svg>

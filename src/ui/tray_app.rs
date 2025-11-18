@@ -4,9 +4,9 @@ use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     TrayIcon, TrayIconBuilder,
 };
-use image::Rgba;
 
 use crate::config::{Config, DrinkSize};
+use super::icons;
 
 /// Callback handler for menu item actions
 pub trait MenuCallback: Send + Sync {
@@ -45,8 +45,7 @@ impl TrayApp {
             let height_cm = height_mm as f32 / 10.0;
 
             let label = format!(
-                "{} {} - {:.1}cm",
-                get_icon_emoji(preset),
+                "{} - {:.1}cm",
                 preset.name(),
                 height_cm
             );
@@ -113,11 +112,21 @@ impl TrayApp {
     }
 }
 
-/// Create a simple tray icon (chair emoji as icon)
+/// Create the tray icon from SVG
 fn create_tray_icon() -> tray_icon::Icon {
-    // Create a simple 32x32 icon with a chair emoji
-    // For a better icon, you'd load a PNG file, but for now we'll create a simple colored square
     let size = 32;
+
+    // Try to load the SVG icon, fallback to a simple circle if it fails
+    let rgba = icons::load_tray_icon(size).unwrap_or_else(|e| {
+        log::warn!("Failed to load tray icon SVG: {}. Using fallback.", e);
+        create_fallback_icon(size)
+    });
+
+    tray_icon::Icon::from_rgba(rgba, size, size).expect("Failed to create icon")
+}
+
+/// Create a fallback icon (simple blue circle) if SVG loading fails
+fn create_fallback_icon(size: u32) -> Vec<u8> {
     let mut rgba = vec![0u8; (size * size * 4) as usize];
 
     // Create a simple blue circle as the icon
@@ -145,15 +154,5 @@ fn create_tray_icon() -> tray_icon::Icon {
         }
     }
 
-    tray_icon::Icon::from_rgba(rgba, size, size).expect("Failed to create icon")
-}
-
-/// Get emoji icon for drink size
-fn get_icon_emoji(preset: DrinkSize) -> &'static str {
-    match preset {
-        DrinkSize::Short => "☕",
-        DrinkSize::Tall => "🥤",
-        DrinkSize::Grande => "🍺",
-        DrinkSize::Venti => "🏺",
-    }
+    rgba
 }

@@ -12,7 +12,6 @@ use objc::{msg_send, sel, sel_impl};
 use std::sync::{Arc, Mutex};
 
 use crate::config::{Config, DrinkSize};
-use super::icons;
 
 /// Callback handler for menu item actions
 pub trait MenuCallback: Send + Sync {
@@ -51,7 +50,7 @@ impl MenuBarApp {
             // Set the status bar button title/icon
             let button = status_item.button();
             let title = NSString::alloc(nil)
-                .init_str("🪑"); // Chair emoji for desk
+                .init_str("⌘"); // Desk control symbol
             let _: () = msg_send![button, setTitle: title];
 
             // Create menu
@@ -72,7 +71,7 @@ impl MenuBarApp {
 
                 let label = format!(
                     "{} - {:.1}cm",
-                    icons::get_text_icon(preset.name()),
+                    preset.name(),
                     height_cm
                 );
 
