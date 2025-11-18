@@ -137,9 +137,10 @@ impl DeskController {
             match Self::connect_to_peripheral(peripheral).await {
                 Ok(controller) => return Ok(controller),
                 Err(e) => {
+                    log::error!("Connection attempt {} failed: {}", attempt, e);
                     last_error = Some(e);
                     if attempt < max_retries {
-                        log::warn!("Connection failed on attempt {}, retrying...", attempt);
+                        log::warn!("Retrying connection (attempt {} of {})...", attempt + 1, max_retries);
                         sleep(Duration::from_millis(500)).await;
                         continue;
                     }
@@ -167,11 +168,19 @@ impl DeskController {
         // Connect to the peripheral if not connected
         if !is_connected {
             log::info!("Desk not connected, establishing connection...");
-            timeout(Duration::from_secs(10), peripheral.connect())
-                .await
-                .context("Timeout connecting to desk (10s)")?
-                .context("Failed to connect to desk")?;
-            log::info!("Bluetooth connection established");
+            match timeout(Duration::from_secs(10), peripheral.connect()).await {
+                Ok(Ok(())) => {
+                    log::info!("Bluetooth connection established successfully");
+                }
+                Ok(Err(e)) => {
+                    log::error!("Bluetooth connection failed: {}", e);
+                    return Err(anyhow!("Failed to connect to desk: {}", e));
+                }
+                Err(_) => {
+                    log::error!("Bluetooth connection timed out after 10 seconds");
+                    return Err(anyhow!("Timeout connecting to desk (10s)"));
+                }
+            }
         } else {
             log::info!("Desk already connected");
         }
