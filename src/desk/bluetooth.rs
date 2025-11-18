@@ -132,18 +132,39 @@ impl DeskController {
 
     /// Connect to a specific peripheral
     async fn connect_to_peripheral(peripheral: Peripheral) -> Result<Self> {
-        // Connect to the peripheral
-        if !peripheral.is_connected().await? {
-            log::info!("Connecting to desk...");
-            peripheral.connect().await.context("Failed to connect to desk")?;
-            log::info!("Connected successfully");
+        use tokio::time::timeout;
+
+        // Check connection status
+        log::info!("Checking desk connection status...");
+        let is_connected = timeout(Duration::from_secs(5), peripheral.is_connected())
+            .await
+            .context("Timeout checking connection status")?
+            .context("Failed to check connection status")?;
+
+        // Connect to the peripheral if not connected
+        if !is_connected {
+            log::info!("Desk not connected, establishing connection...");
+            timeout(Duration::from_secs(10), peripheral.connect())
+                .await
+                .context("Timeout connecting to desk (10s)")?
+                .context("Failed to connect to desk")?;
+            log::info!("Bluetooth connection established");
+        } else {
+            log::info!("Desk already connected");
         }
 
         // Discover services
-        peripheral.discover_services().await.context("Failed to discover services")?;
+        log::info!("Discovering desk services and characteristics...");
+        timeout(Duration::from_secs(10), peripheral.discover_services())
+            .await
+            .context("Timeout discovering services (10s)")?
+            .context("Failed to discover services")?;
+        log::info!("Services discovered successfully");
 
         // Find the control service and characteristics
         let chars = peripheral.characteristics();
+        log::info!("Found {} characteristics total", chars.len());
+
         let control_char = chars
             .iter()
             .find(|c| c.uuid == CONTROL_CHARACTERISTIC_UUID)
@@ -155,14 +176,17 @@ impl DeskController {
             .cloned();
 
         if control_char.is_none() {
+            log::error!("Could not find control characteristic (UUID: {})", CONTROL_CHARACTERISTIC_UUID);
+            log::error!("Available characteristics: {:?}", chars.iter().map(|c| c.uuid).collect::<Vec<_>>());
             return Err(anyhow!("Could not find control characteristic on desk"));
         }
 
         if height_char.is_none() {
+            log::error!("Could not find height characteristic (UUID: {})", HEIGHT_CHARACTERISTIC_UUID);
             return Err(anyhow!("Could not find height characteristic on desk"));
         }
 
-        log::info!("Desk controller initialized");
+        log::info!("Desk controller fully initialized and ready");
 
         Ok(Self {
             peripheral,

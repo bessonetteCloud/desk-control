@@ -31,14 +31,21 @@ impl AppState {
         let mut controller = self.desk_controller.lock().await;
 
         if controller.is_none() {
-            log::info!("Connecting to desk...");
+            log::info!("No active desk connection, initiating new connection...");
             let config = self.config.lock().await;
             let desk_address = config.desk_address.clone();
             drop(config); // Release lock before async operation
 
+            if desk_address.is_none() {
+                return Err(anyhow::anyhow!("No desk configured. Please configure a desk first."));
+            }
+
+            log::info!("Connecting to desk at address: {:?}", desk_address);
             let desk = DeskController::connect(desk_address).await?;
             *controller = Some(desk);
-            log::info!("Connected to desk successfully");
+            log::info!("Desk connection established and cached");
+        } else {
+            log::info!("Using existing desk connection (no scan needed)");
         }
 
         Ok(())
@@ -46,18 +53,24 @@ impl AppState {
 
     /// Move desk to a specific preset
     async fn move_to_preset(&self, preset: DrinkSize) -> Result<()> {
+        log::info!("=== Starting move to {} preset ===", preset.name());
+
         self.ensure_connected().await?;
 
         let config = self.config.lock().await;
         let height_mm = config.get_preset(preset);
         drop(config);
 
-        log::info!("Moving to {} preset ({}mm)", preset.name(), height_mm);
+        log::info!("Target height: {}mm ({:.1}cm)", height_mm, height_mm as f32 / 10.0);
 
         let controller = self.desk_controller.lock().await;
         if let Some(desk) = controller.as_ref() {
+            log::info!("Sending move command to desk...");
             desk.move_to_height(height_mm).await?;
-            log::info!("Successfully moved to {} preset", preset.name());
+            log::info!("=== Successfully moved to {} preset ===", preset.name());
+        } else {
+            log::error!("Controller was None after ensure_connected succeeded - this should not happen!");
+            return Err(anyhow::anyhow!("Desk controller unavailable"));
         }
 
         Ok(())
