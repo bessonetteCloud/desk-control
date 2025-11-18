@@ -237,13 +237,17 @@ impl DeskController {
             .as_ref()
             .ok_or_else(|| anyhow!("Height characteristic not available"))?;
 
-        let data = self.peripheral.read(height_char).await?;
+        log::debug!("Reading height characteristic...");
+        let data = self.peripheral.read(height_char).await
+            .context("Failed to read height characteristic from BLE")?;
+
+        log::debug!("Read {} bytes from height characteristic: {:?}", data.len(), data);
 
         let height_units = parse_height(&data)
-            .ok_or_else(|| anyhow!("Failed to parse height data"))?;
+            .ok_or_else(|| anyhow!("Failed to parse height data from bytes: {:?}", data))?;
 
         let height_mm = super::protocol::desk_units_to_mm(height_units);
-        log::debug!("Current height: {}mm", height_mm);
+        log::debug!("Parsed height: {} units = {}mm", height_units, height_mm);
 
         Ok(height_mm)
     }
@@ -256,11 +260,14 @@ impl DeskController {
             .ok_or_else(|| anyhow!("Control characteristic not available"))?;
 
         let bytes = command.to_bytes();
-        log::debug!("Sending command: {:?} -> {:?}", command, bytes);
+        log::info!("Sending command: {:?} -> bytes: {:02X?}", command, bytes);
 
         self.peripheral
             .write(control_char, &bytes, WriteType::WithoutResponse)
-            .await?;
+            .await
+            .context("Failed to write command to BLE characteristic")?;
+
+        log::info!("Command written to BLE characteristic successfully");
 
         Ok(())
     }
@@ -273,6 +280,8 @@ impl DeskController {
         self.send_command(MovementCommand::MoveToHeight(height_units))
             .await?;
 
+        log::info!("Move command sent successfully, waiting for movement to start...");
+
         // Wait for movement to start
         sleep(Duration::from_millis(100)).await;
 
@@ -282,22 +291,46 @@ impl DeskController {
         const POLL_INTERVAL_MS: u64 = 200;
 
         let start = std::time::Instant::now();
+        let mut poll_count = 0;
+
+        log::info!("Starting height polling (target: {}mm, tolerance: {}mm, max wait: {}s)",
+                   height_mm, TOLERANCE_MM, MAX_WAIT_SECS);
 
         loop {
+            poll_count += 1;
+
             if start.elapsed().as_secs() > MAX_WAIT_SECS {
+                log::error!("Timeout after {} polls and {} seconds", poll_count, MAX_WAIT_SECS);
                 return Err(anyhow!("Timeout waiting for desk to reach target height"));
             }
 
-            let current = self.get_height().await?;
-            let diff = if current > height_mm {
-                current - height_mm
-            } else {
-                height_mm - current
-            };
+            match self.get_height().await {
+                Ok(current) => {
+                    let diff = if current > height_mm {
+                        current - height_mm
+                    } else {
+                        height_mm - current
+                    };
 
-            if diff <= TOLERANCE_MM {
-                log::info!("Reached target height: {}mm", current);
-                break;
+                    if poll_count <= 3 || poll_count % 10 == 0 {
+                        log::info!("Poll #{}: Current height: {}mm, Target: {}mm, Diff: {}mm",
+                                   poll_count, current, height_mm, diff);
+                    }
+
+                    if diff <= TOLERANCE_MM {
+                        log::info!("Reached target height after {} polls: {}mm (target: {}mm, diff: {}mm)",
+                                   poll_count, current, height_mm, diff);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    log::error!("Failed to read height on poll #{}: {}", poll_count, e);
+                    // Continue polling despite read error - desk might still be moving
+                    if poll_count > 5 {
+                        log::error!("Multiple height read failures, aborting");
+                        return Err(anyhow!("Failed to read desk height: {}", e));
+                    }
+                }
             }
 
             sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
