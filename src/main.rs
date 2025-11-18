@@ -298,6 +298,7 @@ fn main() -> Result<()> {
 
         log::info!("Starting GTK main loop");
         gtk::main();
+        Ok(())
     }
 
     #[cfg(not(target_os = "linux"))]
