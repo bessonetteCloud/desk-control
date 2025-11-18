@@ -98,9 +98,7 @@ impl TrayApp {
     /// Update the current height display in the menu
     pub fn update_current_height(&self, height_cm: f32) {
         let text = format!("Current: {:.1}cm", height_cm);
-        if let Err(e) = self.current_height_item.set_text(text) {
-            log::warn!("Failed to update current height display: {}", e);
-        }
+        self.current_height_item.set_text(text);
     }
 
     /// Process menu events (call this in your event loop)

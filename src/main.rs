@@ -304,10 +304,14 @@ fn main() -> Result<()> {
     // Create application state
     let state = Arc::new(AppState::new(config.clone()));
 
+    // Clone state and runtime for callback (they will be moved)
+    let state_for_callback = Arc::clone(&state);
+    let runtime_for_callback = Arc::clone(&runtime);
+
     // Create menu callback
     let callback = Arc::new(AppMenuCallback {
-        state,
-        runtime,
+        state: state_for_callback,
+        runtime: runtime_for_callback,
     });
 
     // Create tray app
@@ -338,16 +342,21 @@ fn main() -> Result<()> {
 
         glib::timeout_add_local(Duration::from_secs(5), move || {
             let state = Arc::clone(&state_height);
-            let runtime = Arc::clone(&runtime_height);
             let tray_app = Rc::clone(&tray_app_height);
 
-            runtime.spawn(async move {
+            // Spawn async task to get height (don't capture Rc in the async block)
+            let (tx, rx) = std::sync::mpsc::channel();
+            runtime_height.spawn(async move {
                 if let Some(height_mm) = state.get_current_height().await {
+                    let _ = tx.send(height_mm);
+                }
+            });
+
+            // Schedule UI update on main thread using received height
+            glib::timeout_add_local_once(Duration::from_millis(100), move || {
+                if let Ok(height_mm) = rx.try_recv() {
                     let height_cm = height_mm as f32 / 10.0;
-                    // We need to update the UI on the main thread
-                    glib::idle_add_local_once(move || {
-                        tray_app.borrow().update_current_height(height_cm);
-                    });
+                    tray_app.borrow().update_current_height(height_cm);
                 }
             });
 
