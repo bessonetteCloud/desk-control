@@ -75,6 +75,16 @@ impl AppState {
 
         Ok(())
     }
+
+    /// Get current desk height in millimeters (returns None if not connected)
+    async fn get_current_height(&self) -> Option<u16> {
+        let controller = self.desk_controller.lock().await;
+        if let Some(desk) = controller.as_ref() {
+            desk.get_height().await.ok()
+        } else {
+            None
+        }
+    }
 }
 
 /// Menu callback implementation
@@ -321,6 +331,29 @@ fn main() -> Result<()> {
             glib::ControlFlow::Continue
         });
 
+        // Update current height display periodically
+        let tray_app_height = Rc::clone(&tray_app_rc);
+        let state_height = Arc::clone(&state);
+        let runtime_height = Arc::clone(&runtime);
+
+        glib::timeout_add_local(Duration::from_secs(5), move || {
+            let state = Arc::clone(&state_height);
+            let runtime = Arc::clone(&runtime_height);
+            let tray_app = Rc::clone(&tray_app_height);
+
+            runtime.spawn(async move {
+                if let Some(height_mm) = state.get_current_height().await {
+                    let height_cm = height_mm as f32 / 10.0;
+                    // We need to update the UI on the main thread
+                    glib::idle_add_local_once(move || {
+                        tray_app.borrow().update_current_height(height_cm);
+                    });
+                }
+            });
+
+            glib::ControlFlow::Continue
+        });
+
         log::info!("Starting GTK main loop");
         gtk::main();
         Ok(())
@@ -328,9 +361,30 @@ fn main() -> Result<()> {
 
     #[cfg(not(target_os = "linux"))]
     {
+        use std::time::Instant;
+
         // On other platforms, use simple polling loop
+        let mut last_height_update = Instant::now();
+
         loop {
             tray_app.process_events();
+
+            // Update height display every 5 seconds
+            if last_height_update.elapsed() >= Duration::from_secs(5) {
+                last_height_update = Instant::now();
+
+                let state_clone = Arc::clone(&state);
+                let height_future = async move {
+                    state_clone.get_current_height().await
+                };
+
+                if let Some(height_mm) = runtime.block_on(height_future) {
+                    let height_cm = height_mm as f32 / 10.0;
+                    tray_app.update_current_height(height_cm);
+                    log::debug!("Updated current height: {:.1}cm", height_cm);
+                }
+            }
+
             std::thread::sleep(Duration::from_millis(100));
         }
     }
