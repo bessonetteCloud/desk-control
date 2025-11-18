@@ -51,6 +51,19 @@ pub fn load_tray_icon(size: u32) -> Result<Vec<u8>> {
     load_svg_to_rgba(Path::new("assets/icons/chair.svg"), size)
 }
 
+/// Get emoji icon(s) for drink size with quantity indicating size
+/// Short: ☕  Tall: ☕☕  Grande: ☕☕☕  Venti: ☕☕☕☕
+pub fn get_emoji_for_size(size: &str) -> String {
+    let (emoji, count) = match size {
+        "Short" => ("☕", 1),
+        "Tall" => ("☕", 2),
+        "Grande" => ("☕", 3),
+        "Venti" => ("☕", 4),
+        _ => ("☕", 1),
+    };
+    emoji.repeat(count)
+}
+
 /// Create a menu icon label (just the text now, SVGs handled separately)
 #[cfg(target_os = "macos")]
 pub fn create_menu_icon(size: &str) -> String {

@@ -12,6 +12,7 @@ use objc::{msg_send, sel, sel_impl};
 use std::sync::{Arc, Mutex};
 
 use crate::config::{Config, DrinkSize};
+use super::icons;
 
 /// Callback handler for menu item actions
 pub trait MenuCallback: Send + Sync {
@@ -70,7 +71,8 @@ impl MenuBarApp {
                 let height_cm = height_mm as f32 / 10.0;
 
                 let label = format!(
-                    "{} - {:.1}cm",
+                    "{} {} - {:.1}cm",
+                    icons::get_emoji_for_size(preset.name()),
                     preset.name(),
                     height_cm
                 );

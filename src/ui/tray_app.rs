@@ -45,7 +45,8 @@ impl TrayApp {
             let height_cm = height_mm as f32 / 10.0;
 
             let label = format!(
-                "{} - {:.1}cm",
+                "{} {} - {:.1}cm",
+                icons::get_emoji_for_size(preset.name()),
                 preset.name(),
                 height_cm
             );
