@@ -59,96 +59,99 @@ impl DeskController {
 
     /// Connect to a specific desk by address or first available desk
     pub async fn connect(desk_address: Option<String>) -> Result<Self> {
-        // When we have a specific address, try scanning multiple times with shorter intervals
-        // This is faster and more reliable than one long scan
-        let (scan_duration, max_retries) = if desk_address.is_some() {
-            (2u64, 3) // 2 second scans, up to 3 retries = max 6 seconds
+        // Scan for desks - do this once to find the peripheral
+        let scan_duration = if desk_address.is_some() { 5u64 } else { 10u64 };
+        log::info!("Scanning for desks for {} seconds...", scan_duration);
+
+        let desks = Self::scan_for_desks(scan_duration).await?;
+
+        if desks.is_empty() {
+            return Err(anyhow!("No Linak desks found"));
+        }
+
+        // Find the peripheral matching the desk address
+        let peripheral = if let Some(ref addr) = desk_address {
+            log::info!("Searching for desk with address: {}", addr);
+            let mut found_peripheral = None;
+
+            for p in desks {
+                match p.properties().await {
+                    Ok(Some(props)) => {
+                        let p_addr = props.address.to_string();
+                        log::debug!("Checking peripheral with address: {}", p_addr);
+                        if p_addr == *addr {
+                            log::info!("Found matching desk with address: {}", p_addr);
+                            found_peripheral = Some(p);
+                            break;
+                        }
+                    }
+                    Ok(None) => {
+                        log::debug!("Peripheral has no properties");
+                    }
+                    Err(e) => {
+                        log::debug!("Failed to get peripheral properties: {}", e);
+                    }
+                }
+            }
+
+            match found_peripheral {
+                Some(p) => {
+                    log::info!("Selected desk peripheral for connection");
+                    p
+                },
+                None => {
+                    return Err(anyhow!("Desk with address {} not found", addr));
+                }
+            }
         } else {
-            (5u64, 1) // 5 second scan, no retries for initial setup
+            log::info!("No desk address specified, connecting to first available desk");
+            desks
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow!("No desks available"))?
         };
 
+        // Wait a moment after scanning to let BLE stack settle
+        log::info!("Waiting for BLE stack to settle after scan...");
+        sleep(Duration::from_millis(1000)).await;
+
+        // Try to connect to the peripheral with retries (but don't rescan)
+        let max_retries = 3;
         let mut last_error = None;
 
         for attempt in 1..=max_retries {
             if attempt > 1 {
-                log::info!("Retry attempt {} of {}", attempt, max_retries);
+                log::info!("Connection retry attempt {} of {}", attempt, max_retries);
+                // Wait longer between retries to let BLE stack settle
+                sleep(Duration::from_secs(2)).await;
             }
-
-            let desks = Self::scan_for_desks(scan_duration).await?;
-
-            if desks.is_empty() {
-                if attempt < max_retries {
-                    log::warn!("No desks found on attempt {}, retrying...", attempt);
-                    sleep(Duration::from_millis(500)).await;
-                    continue;
-                }
-                return Err(anyhow!("No Linak desks found after {} attempts", max_retries));
-            }
-
-            // Find the peripheral matching the desk address
-            let peripheral = if let Some(ref addr) = desk_address {
-                log::info!("Searching for desk with address: {}", addr);
-                let mut found_peripheral = None;
-
-                for p in desks {
-                    match p.properties().await {
-                        Ok(Some(props)) => {
-                            let p_addr = props.address.to_string();
-                            log::debug!("Checking peripheral with address: {}", p_addr);
-                            if p_addr == *addr {
-                                log::info!("Found matching desk with address: {}", p_addr);
-                                found_peripheral = Some(p);
-                                break;
-                            }
-                        }
-                        Ok(None) => {
-                            log::debug!("Peripheral has no properties");
-                        }
-                        Err(e) => {
-                            log::debug!("Failed to get peripheral properties: {}", e);
-                        }
-                    }
-                }
-
-                match found_peripheral {
-                    Some(p) => {
-                        log::info!("Selected desk peripheral for connection");
-                        p
-                    },
-                    None => {
-                        if attempt < max_retries {
-                            log::warn!("Desk with address {} not found on attempt {}, retrying...", addr, attempt);
-                            sleep(Duration::from_millis(500)).await;
-                            continue;
-                        }
-                        return Err(anyhow!("Desk with address {} not found after {} attempts", addr, max_retries));
-                    }
-                }
-            } else {
-                log::info!("No desk address specified, connecting to first available desk");
-                desks
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| anyhow!("No desks available"))?
-            };
 
             // Try to connect to the peripheral
-            log::info!("Attempting to connect to peripheral...");
-            match Self::connect_to_peripheral(peripheral).await {
-                Ok(controller) => return Ok(controller),
+            log::info!("Attempting to connect to peripheral (attempt {})...", attempt);
+            match Self::connect_to_peripheral(peripheral.clone()).await {
+                Ok(controller) => {
+                    log::info!("Successfully connected on attempt {}", attempt);
+                    return Ok(controller);
+                }
                 Err(e) => {
                     log::error!("Connection attempt {} failed: {}", attempt, e);
+
+                    // Try to ensure we're disconnected before retry
+                    if let Ok(true) = peripheral.is_connected().await {
+                        log::info!("Disconnecting before retry...");
+                        let _ = peripheral.disconnect().await;
+                        sleep(Duration::from_millis(500)).await;
+                    }
+
                     last_error = Some(e);
                     if attempt < max_retries {
-                        log::warn!("Retrying connection (attempt {} of {})...", attempt + 1, max_retries);
-                        sleep(Duration::from_millis(500)).await;
-                        continue;
+                        log::warn!("Will retry connection...");
                     }
                 }
             }
         }
 
-        Err(last_error.unwrap_or_else(|| anyhow!("Failed to connect to desk")))
+        Err(last_error.unwrap_or_else(|| anyhow!("Failed to connect to desk after {} attempts", max_retries)))
     }
 
     /// Connect to a specific peripheral
@@ -168,7 +171,7 @@ impl DeskController {
         // Connect to the peripheral if not connected
         if !is_connected {
             log::info!("Desk not connected, establishing connection...");
-            match timeout(Duration::from_secs(10), peripheral.connect()).await {
+            match timeout(Duration::from_secs(15), peripheral.connect()).await {
                 Ok(Ok(())) => {
                     log::info!("Bluetooth connection established successfully");
                 }
@@ -177,8 +180,8 @@ impl DeskController {
                     return Err(anyhow!("Failed to connect to desk: {}", e));
                 }
                 Err(_) => {
-                    log::error!("Bluetooth connection timed out after 10 seconds");
-                    return Err(anyhow!("Timeout connecting to desk (10s)"));
+                    log::error!("Bluetooth connection timed out after 15 seconds");
+                    return Err(anyhow!("Timeout connecting to desk (15s)"));
                 }
             }
         } else {
