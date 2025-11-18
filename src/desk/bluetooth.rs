@@ -85,17 +85,36 @@ impl DeskController {
                 return Err(anyhow!("No Linak desks found after {} attempts", max_retries));
             }
 
+            // Find the peripheral matching the desk address
             let peripheral = if let Some(ref addr) = desk_address {
-                match desks
-                    .into_iter()
-                    .find(|p| {
-                        if let Ok(Some(props)) = futures::executor::block_on(p.properties()) {
-                            props.address.to_string() == *addr
-                        } else {
-                            false
+                log::info!("Searching for desk with address: {}", addr);
+                let mut found_peripheral = None;
+
+                for p in desks {
+                    match p.properties().await {
+                        Ok(Some(props)) => {
+                            let p_addr = props.address.to_string();
+                            log::debug!("Checking peripheral with address: {}", p_addr);
+                            if p_addr == *addr {
+                                log::info!("Found matching desk with address: {}", p_addr);
+                                found_peripheral = Some(p);
+                                break;
+                            }
                         }
-                    }) {
-                    Some(p) => p,
+                        Ok(None) => {
+                            log::debug!("Peripheral has no properties");
+                        }
+                        Err(e) => {
+                            log::debug!("Failed to get peripheral properties: {}", e);
+                        }
+                    }
+                }
+
+                match found_peripheral {
+                    Some(p) => {
+                        log::info!("Selected desk peripheral for connection");
+                        p
+                    },
                     None => {
                         if attempt < max_retries {
                             log::warn!("Desk with address {} not found on attempt {}, retrying...", addr, attempt);
@@ -114,6 +133,7 @@ impl DeskController {
             };
 
             // Try to connect to the peripheral
+            log::info!("Attempting to connect to peripheral...");
             match Self::connect_to_peripheral(peripheral).await {
                 Ok(controller) => return Ok(controller),
                 Err(e) => {
@@ -134,12 +154,15 @@ impl DeskController {
     async fn connect_to_peripheral(peripheral: Peripheral) -> Result<Self> {
         use tokio::time::timeout;
 
+        log::info!("Entered connect_to_peripheral function");
+
         // Check connection status
         log::info!("Checking desk connection status...");
         let is_connected = timeout(Duration::from_secs(5), peripheral.is_connected())
             .await
             .context("Timeout checking connection status")?
             .context("Failed to check connection status")?;
+        log::info!("Connection status check completed: is_connected = {}", is_connected);
 
         // Connect to the peripheral if not connected
         if !is_connected {
