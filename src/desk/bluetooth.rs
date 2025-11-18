@@ -277,13 +277,34 @@ impl DeskController {
         let height_units = super::protocol::mm_to_desk_units(height_mm);
         log::info!("Moving desk to {}mm ({}units)", height_mm, height_units);
 
+        // Get current height to determine direction
+        let current_mm = self.get_height().await?;
+        log::info!("Current height: {}mm, Target: {}mm", current_mm, height_mm);
+
+        // Try MoveToHeight command first
+        log::info!("Attempting MoveToHeight command...");
         self.send_command(MovementCommand::MoveToHeight(height_units))
             .await?;
 
         log::info!("Move command sent successfully, waiting for movement to start...");
 
         // Wait for movement to start
-        sleep(Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(500)).await;
+
+        // Check if desk started moving
+        let new_height = self.get_height().await?;
+        if (new_height as i32 - current_mm as i32).abs() < 5 {
+            log::warn!("Desk did not respond to MoveToHeight command, trying manual Up/Down...");
+
+            // Desk didn't move, try using Up/Down commands instead
+            let direction = if height_mm > current_mm {
+                MovementCommand::Up
+            } else {
+                MovementCommand::Down
+            };
+
+            return self.move_manually(height_mm, direction).await;
+        }
 
         // Poll until we reach the target height (with tolerance)
         const TOLERANCE_MM: u16 = 5; // 5mm tolerance
@@ -337,6 +358,64 @@ impl DeskController {
         }
 
         Ok(())
+    }
+
+    /// Move desk manually using Up/Down commands
+    async fn move_manually(&self, target_mm: u16, direction: MovementCommand) -> Result<()> {
+        log::info!("Starting manual movement using {:?} command", direction);
+
+        const TOLERANCE_MM: u16 = 5;
+        const MAX_WAIT_SECS: u64 = 60;
+        const POLL_INTERVAL_MS: u64 = 100;
+
+        let start = std::time::Instant::now();
+        let mut poll_count = 0;
+        let mut last_height = self.get_height().await?;
+
+        loop {
+            poll_count += 1;
+
+            if start.elapsed().as_secs() > MAX_WAIT_SECS {
+                self.send_command(MovementCommand::Stop).await?;
+                log::error!("Manual movement timeout after {} seconds", MAX_WAIT_SECS);
+                return Err(anyhow!("Timeout during manual movement"));
+            }
+
+            let current = self.get_height().await?;
+            let diff = if current > target_mm {
+                current - target_mm
+            } else {
+                target_mm - current
+            };
+
+            if poll_count <= 3 || poll_count % 20 == 0 {
+                log::info!("Manual move poll #{}: Current: {}mm, Target: {}mm, Diff: {}mm",
+                           poll_count, current, target_mm, diff);
+            }
+
+            if diff <= TOLERANCE_MM {
+                self.send_command(MovementCommand::Stop).await?;
+                log::info!("Manual movement complete: {}mm (target: {}mm)", current, target_mm);
+                return Ok(());
+            }
+
+            // Check if we're still moving
+            if (current as i32 - last_height as i32).abs() < 2 && poll_count > 10 {
+                // Desk has stopped moving but hasn't reached target
+                log::warn!("Desk stopped moving at {}mm, target was {}mm", current, target_mm);
+                self.send_command(MovementCommand::Stop).await?;
+                return Err(anyhow!("Desk stopped before reaching target height"));
+            }
+
+            last_height = current;
+
+            // Send movement command periodically (every ~300ms)
+            if poll_count % 3 == 1 {
+                self.send_command(direction).await?;
+            }
+
+            sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
+        }
     }
 
     /// Stop desk movement
