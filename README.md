@@ -243,6 +243,12 @@ Heights are transmitted in 0.1mm units (e.g., 10500 = 1050mm = 105cm).
   }
   ```
 - Restart Waybar after configuration changes
+- If the icon still doesn't appear:
+  - Check Waybar logs: `journalctl -f --user -u waybar` (if running as a service)
+  - Verify libappindicator is installed: `pacman -Q libappindicator-gtk3`
+  - Try running the app with debug logging: `RUST_LOG=debug ./desk-control`
+  - Ensure the GTK main loop is running (this app uses gtk::main() on Linux)
+  - Some systems may require restarting your compositor after installing libappindicator
 
 **Other Wayland compositors:**
 - Ensure you have a status bar configured (waybar, i3status, etc.)

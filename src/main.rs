@@ -112,7 +112,14 @@ impl MenuCallback for AppMenuCallback {
 
     fn on_quit(&self) {
         log::info!("Quitting application");
-        std::process::exit(0);
+        #[cfg(target_os = "linux")]
+        {
+            gtk::main_quit();
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            std::process::exit(0);
+        }
     }
 }
 
@@ -274,8 +281,31 @@ fn main() -> Result<()> {
     log::info!("System tray app started");
 
     // Event loop to process tray events
-    loop {
-        tray_app.process_events();
-        std::thread::sleep(Duration::from_millis(100));
+    #[cfg(target_os = "linux")]
+    {
+        // On Linux, we need to use GTK's main loop for the tray icon to work
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let tray_app_rc = Rc::new(RefCell::new(tray_app));
+        let tray_app_clone = Rc::clone(&tray_app_rc);
+
+        // Process tray events periodically using GTK's timeout mechanism
+        glib::timeout_add_local(Duration::from_millis(100), move || {
+            tray_app_clone.borrow().process_events();
+            glib::ControlFlow::Continue
+        });
+
+        log::info!("Starting GTK main loop");
+        gtk::main();
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        // On other platforms, use simple polling loop
+        loop {
+            tray_app.process_events();
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 }
