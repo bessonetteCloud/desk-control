@@ -59,40 +59,88 @@ impl DeskController {
 
     /// Connect to a specific desk by address or first available desk
     pub async fn connect(desk_address: Option<String>) -> Result<Self> {
-        let desks = Self::scan_for_desks(5).await?;
-
-        if desks.is_empty() {
-            return Err(anyhow!("No Linak desks found"));
-        }
-
-        let peripheral = if let Some(addr) = desk_address {
-            desks
-                .into_iter()
-                .find(|p| {
-                    if let Ok(Some(props)) = futures::executor::block_on(p.properties()) {
-                        props.address.to_string() == addr
-                    } else {
-                        false
-                    }
-                })
-                .ok_or_else(|| anyhow!("Desk with address {} not found", addr))?
+        // When we have a specific address, try scanning multiple times with shorter intervals
+        // This is faster and more reliable than one long scan
+        let (scan_duration, max_retries) = if desk_address.is_some() {
+            (2u64, 3) // 2 second scans, up to 3 retries = max 6 seconds
         } else {
-            log::info!("No desk address specified, connecting to first available desk");
-            desks
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow!("No desks available"))?
+            (5u64, 1) // 5 second scan, no retries for initial setup
         };
 
+        let mut last_error = None;
+
+        for attempt in 1..=max_retries {
+            if attempt > 1 {
+                log::info!("Retry attempt {} of {}", attempt, max_retries);
+            }
+
+            let desks = Self::scan_for_desks(scan_duration).await?;
+
+            if desks.is_empty() {
+                if attempt < max_retries {
+                    log::warn!("No desks found on attempt {}, retrying...", attempt);
+                    sleep(Duration::from_millis(500)).await;
+                    continue;
+                }
+                return Err(anyhow!("No Linak desks found after {} attempts", max_retries));
+            }
+
+            let peripheral = if let Some(ref addr) = desk_address {
+                match desks
+                    .into_iter()
+                    .find(|p| {
+                        if let Ok(Some(props)) = futures::executor::block_on(p.properties()) {
+                            props.address.to_string() == *addr
+                        } else {
+                            false
+                        }
+                    }) {
+                    Some(p) => p,
+                    None => {
+                        if attempt < max_retries {
+                            log::warn!("Desk with address {} not found on attempt {}, retrying...", addr, attempt);
+                            sleep(Duration::from_millis(500)).await;
+                            continue;
+                        }
+                        return Err(anyhow!("Desk with address {} not found after {} attempts", addr, max_retries));
+                    }
+                }
+            } else {
+                log::info!("No desk address specified, connecting to first available desk");
+                desks
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| anyhow!("No desks available"))?
+            };
+
+            // Try to connect to the peripheral
+            match Self::connect_to_peripheral(peripheral).await {
+                Ok(controller) => return Ok(controller),
+                Err(e) => {
+                    last_error = Some(e);
+                    if attempt < max_retries {
+                        log::warn!("Connection failed on attempt {}, retrying...", attempt);
+                        sleep(Duration::from_millis(500)).await;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| anyhow!("Failed to connect to desk")))
+    }
+
+    /// Connect to a specific peripheral
+    async fn connect_to_peripheral(peripheral: Peripheral) -> Result<Self> {
         // Connect to the peripheral
         if !peripheral.is_connected().await? {
             log::info!("Connecting to desk...");
-            peripheral.connect().await?;
+            peripheral.connect().await.context("Failed to connect to desk")?;
             log::info!("Connected successfully");
         }
 
         // Discover services
-        peripheral.discover_services().await?;
+        peripheral.discover_services().await.context("Failed to discover services")?;
 
         // Find the control service and characteristics
         let chars = peripheral.characteristics();

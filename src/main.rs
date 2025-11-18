@@ -74,12 +74,19 @@ impl MenuCallback for AppMenuCallback {
     fn on_preset_selected(&self, preset: DrinkSize) {
         let state = Arc::clone(&self.state);
         self.runtime.spawn(async move {
-            if let Err(e) = state.move_to_preset(preset).await {
-                log::error!("Failed to move to preset {}: {}", preset.name(), e);
-                show_error_dialog(&format!(
-                    "Failed to move desk: {}",
-                    e
-                ));
+            log::info!("Moving desk to {} preset", preset.name());
+            match state.move_to_preset(preset).await {
+                Ok(_) => {
+                    log::info!("Successfully moved to {} preset", preset.name());
+                    show_info_dialog(&format!("Desk moved to {} preset", preset.name()));
+                }
+                Err(e) => {
+                    log::error!("Failed to move to preset {}: {}", preset.name(), e);
+                    show_error_dialog(&format!(
+                        "Failed to move desk: {}",
+                        e
+                    ));
+                }
             }
         });
     }
@@ -149,12 +156,17 @@ async fn scan_and_configure_desk(state: Arc<AppState>) -> Result<()> {
     let mut config = state.config.lock().await;
     config.desk_address = Some(address.clone());
     config.save()?;
+    drop(config);
 
     log::info!("Configured desk: {}", address);
 
-    // Clear existing controller to force reconnect
+    // Connect to the desk and keep the connection alive for future use
+    log::info!("Establishing connection to configured desk...");
+    let new_controller = DeskController::connect(Some(address)).await?;
     let mut controller = state.desk_controller.lock().await;
-    *controller = None;
+    *controller = Some(new_controller);
+
+    log::info!("Desk connected and ready to use");
 
     Ok(())
 }
