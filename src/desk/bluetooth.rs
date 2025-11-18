@@ -241,13 +241,13 @@ impl DeskController {
         let data = self.peripheral.read(height_char).await
             .context("Failed to read height characteristic from BLE")?;
 
-        log::debug!("Read {} bytes from height characteristic: {:?}", data.len(), data);
+        log::info!("Read {} bytes from height characteristic: {:02X?}", data.len(), data);
 
         let height_units = parse_height(&data)
             .ok_or_else(|| anyhow!("Failed to parse height data from bytes: {:?}", data))?;
 
         let height_mm = super::protocol::desk_units_to_mm(height_units);
-        log::debug!("Parsed height: {} units = {}mm", height_units, height_mm);
+        log::info!("Parsed height: {} units = {}mm (bytes: {:02X?})", height_units, height_mm, data);
 
         Ok(height_mm)
     }
