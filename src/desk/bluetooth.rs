@@ -59,23 +59,50 @@ impl DeskController {
 
     /// Connect to a specific desk by address or first available desk
     pub async fn connect(desk_address: Option<String>) -> Result<Self> {
-        let desks = Self::scan_for_desks(5).await?;
+        // Scan for desks - do this once to find the peripheral
+        let scan_duration = if desk_address.is_some() { 5u64 } else { 10u64 };
+        log::info!("Scanning for desks for {} seconds...", scan_duration);
+
+        let desks = Self::scan_for_desks(scan_duration).await?;
 
         if desks.is_empty() {
             return Err(anyhow!("No Linak desks found"));
         }
 
-        let peripheral = if let Some(addr) = desk_address {
-            desks
-                .into_iter()
-                .find(|p| {
-                    if let Ok(Some(props)) = futures::executor::block_on(p.properties()) {
-                        props.address.to_string() == addr
-                    } else {
-                        false
+        // Find the peripheral matching the desk address
+        let peripheral = if let Some(ref addr) = desk_address {
+            log::info!("Searching for desk with address: {}", addr);
+            let mut found_peripheral = None;
+
+            for p in desks {
+                match p.properties().await {
+                    Ok(Some(props)) => {
+                        let p_addr = props.address.to_string();
+                        log::debug!("Checking peripheral with address: {}", p_addr);
+                        if p_addr == *addr {
+                            log::info!("Found matching desk with address: {}", p_addr);
+                            found_peripheral = Some(p);
+                            break;
+                        }
                     }
-                })
-                .ok_or_else(|| anyhow!("Desk with address {} not found", addr))?
+                    Ok(None) => {
+                        log::debug!("Peripheral has no properties");
+                    }
+                    Err(e) => {
+                        log::debug!("Failed to get peripheral properties: {}", e);
+                    }
+                }
+            }
+
+            match found_peripheral {
+                Some(p) => {
+                    log::info!("Selected desk peripheral for connection");
+                    p
+                },
+                None => {
+                    return Err(anyhow!("Desk with address {} not found", addr));
+                }
+            }
         } else {
             log::info!("No desk address specified, connecting to first available desk");
             desks
@@ -84,18 +111,95 @@ impl DeskController {
                 .ok_or_else(|| anyhow!("No desks available"))?
         };
 
-        // Connect to the peripheral
-        if !peripheral.is_connected().await? {
-            log::info!("Connecting to desk...");
-            peripheral.connect().await?;
-            log::info!("Connected successfully");
+        // Wait a moment after scanning to let BLE stack settle
+        log::info!("Waiting for BLE stack to settle after scan...");
+        sleep(Duration::from_millis(1000)).await;
+
+        // Try to connect to the peripheral with retries (but don't rescan)
+        let max_retries = 3;
+        let mut last_error = None;
+
+        for attempt in 1..=max_retries {
+            if attempt > 1 {
+                log::info!("Connection retry attempt {} of {}", attempt, max_retries);
+                // Wait longer between retries to let BLE stack settle
+                sleep(Duration::from_secs(2)).await;
+            }
+
+            // Try to connect to the peripheral
+            log::info!("Attempting to connect to peripheral (attempt {})...", attempt);
+            match Self::connect_to_peripheral(peripheral.clone()).await {
+                Ok(controller) => {
+                    log::info!("Successfully connected on attempt {}", attempt);
+                    return Ok(controller);
+                }
+                Err(e) => {
+                    log::error!("Connection attempt {} failed: {}", attempt, e);
+
+                    // Try to ensure we're disconnected before retry
+                    if let Ok(true) = peripheral.is_connected().await {
+                        log::info!("Disconnecting before retry...");
+                        let _ = peripheral.disconnect().await;
+                        sleep(Duration::from_millis(500)).await;
+                    }
+
+                    last_error = Some(e);
+                    if attempt < max_retries {
+                        log::warn!("Will retry connection...");
+                    }
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| anyhow!("Failed to connect to desk after {} attempts", max_retries)))
+    }
+
+    /// Connect to a specific peripheral
+    async fn connect_to_peripheral(peripheral: Peripheral) -> Result<Self> {
+        use tokio::time::timeout;
+
+        log::info!("Entered connect_to_peripheral function");
+
+        // Check connection status
+        log::info!("Checking desk connection status...");
+        let is_connected = timeout(Duration::from_secs(5), peripheral.is_connected())
+            .await
+            .context("Timeout checking connection status")?
+            .context("Failed to check connection status")?;
+        log::info!("Connection status check completed: is_connected = {}", is_connected);
+
+        // Connect to the peripheral if not connected
+        if !is_connected {
+            log::info!("Desk not connected, establishing connection...");
+            match timeout(Duration::from_secs(15), peripheral.connect()).await {
+                Ok(Ok(())) => {
+                    log::info!("Bluetooth connection established successfully");
+                }
+                Ok(Err(e)) => {
+                    log::error!("Bluetooth connection failed: {}", e);
+                    return Err(anyhow!("Failed to connect to desk: {}", e));
+                }
+                Err(_) => {
+                    log::error!("Bluetooth connection timed out after 15 seconds");
+                    return Err(anyhow!("Timeout connecting to desk (15s)"));
+                }
+            }
+        } else {
+            log::info!("Desk already connected");
         }
 
         // Discover services
-        peripheral.discover_services().await?;
+        log::info!("Discovering desk services and characteristics...");
+        timeout(Duration::from_secs(10), peripheral.discover_services())
+            .await
+            .context("Timeout discovering services (10s)")?
+            .context("Failed to discover services")?;
+        log::info!("Services discovered successfully");
 
         // Find the control service and characteristics
         let chars = peripheral.characteristics();
+        log::info!("Found {} characteristics total", chars.len());
+
         let control_char = chars
             .iter()
             .find(|c| c.uuid == CONTROL_CHARACTERISTIC_UUID)
@@ -107,14 +211,17 @@ impl DeskController {
             .cloned();
 
         if control_char.is_none() {
+            log::error!("Could not find control characteristic (UUID: {})", CONTROL_CHARACTERISTIC_UUID);
+            log::error!("Available characteristics: {:?}", chars.iter().map(|c| c.uuid).collect::<Vec<_>>());
             return Err(anyhow!("Could not find control characteristic on desk"));
         }
 
         if height_char.is_none() {
+            log::error!("Could not find height characteristic (UUID: {})", HEIGHT_CHARACTERISTIC_UUID);
             return Err(anyhow!("Could not find height characteristic on desk"));
         }
 
-        log::info!("Desk controller initialized");
+        log::info!("Desk controller fully initialized and ready");
 
         Ok(Self {
             peripheral,
@@ -130,13 +237,17 @@ impl DeskController {
             .as_ref()
             .ok_or_else(|| anyhow!("Height characteristic not available"))?;
 
-        let data = self.peripheral.read(height_char).await?;
+        log::debug!("Reading height characteristic...");
+        let data = self.peripheral.read(height_char).await
+            .context("Failed to read height characteristic from BLE")?;
+
+        log::info!("Read {} bytes from height characteristic: {:02X?}", data.len(), data);
 
         let height_units = parse_height(&data)
-            .ok_or_else(|| anyhow!("Failed to parse height data"))?;
+            .ok_or_else(|| anyhow!("Failed to parse height data from bytes: {:?}", data))?;
 
         let height_mm = super::protocol::desk_units_to_mm(height_units);
-        log::debug!("Current height: {}mm", height_mm);
+        log::info!("Parsed height: {} units = {}mm (bytes: {:02X?})", height_units, height_mm, data);
 
         Ok(height_mm)
     }
@@ -149,11 +260,14 @@ impl DeskController {
             .ok_or_else(|| anyhow!("Control characteristic not available"))?;
 
         let bytes = command.to_bytes();
-        log::debug!("Sending command: {:?} -> {:?}", command, bytes);
+        log::info!("Sending command: {:?} -> bytes: {:02X?}", command, bytes);
 
         self.peripheral
             .write(control_char, &bytes, WriteType::WithoutResponse)
-            .await?;
+            .await
+            .context("Failed to write command to BLE characteristic")?;
+
+        log::info!("Command written to BLE characteristic successfully");
 
         Ok(())
     }
@@ -163,11 +277,34 @@ impl DeskController {
         let height_units = super::protocol::mm_to_desk_units(height_mm);
         log::info!("Moving desk to {}mm ({}units)", height_mm, height_units);
 
+        // Get current height to determine direction
+        let current_mm = self.get_height().await?;
+        log::info!("Current height: {}mm, Target: {}mm", current_mm, height_mm);
+
+        // Try MoveToHeight command first
+        log::info!("Attempting MoveToHeight command...");
         self.send_command(MovementCommand::MoveToHeight(height_units))
             .await?;
 
+        log::info!("Move command sent successfully, waiting for movement to start...");
+
         // Wait for movement to start
-        sleep(Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(500)).await;
+
+        // Check if desk started moving
+        let new_height = self.get_height().await?;
+        if (new_height as i32 - current_mm as i32).abs() < 5 {
+            log::warn!("Desk did not respond to MoveToHeight command, trying manual Up/Down...");
+
+            // Desk didn't move, try using Up/Down commands instead
+            let direction = if height_mm > current_mm {
+                MovementCommand::Up
+            } else {
+                MovementCommand::Down
+            };
+
+            return self.move_manually(height_mm, direction).await;
+        }
 
         // Poll until we reach the target height (with tolerance)
         const TOLERANCE_MM: u16 = 5; // 5mm tolerance
@@ -175,28 +312,110 @@ impl DeskController {
         const POLL_INTERVAL_MS: u64 = 200;
 
         let start = std::time::Instant::now();
+        let mut poll_count = 0;
+
+        log::info!("Starting height polling (target: {}mm, tolerance: {}mm, max wait: {}s)",
+                   height_mm, TOLERANCE_MM, MAX_WAIT_SECS);
 
         loop {
+            poll_count += 1;
+
             if start.elapsed().as_secs() > MAX_WAIT_SECS {
+                log::error!("Timeout after {} polls and {} seconds", poll_count, MAX_WAIT_SECS);
                 return Err(anyhow!("Timeout waiting for desk to reach target height"));
             }
 
-            let current = self.get_height().await?;
-            let diff = if current > height_mm {
-                current - height_mm
-            } else {
-                height_mm - current
-            };
+            match self.get_height().await {
+                Ok(current) => {
+                    let diff = if current > height_mm {
+                        current - height_mm
+                    } else {
+                        height_mm - current
+                    };
 
-            if diff <= TOLERANCE_MM {
-                log::info!("Reached target height: {}mm", current);
-                break;
+                    if poll_count <= 3 || poll_count % 10 == 0 {
+                        log::info!("Poll #{}: Current height: {}mm, Target: {}mm, Diff: {}mm",
+                                   poll_count, current, height_mm, diff);
+                    }
+
+                    if diff <= TOLERANCE_MM {
+                        log::info!("Reached target height after {} polls: {}mm (target: {}mm, diff: {}mm)",
+                                   poll_count, current, height_mm, diff);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    log::error!("Failed to read height on poll #{}: {}", poll_count, e);
+                    // Continue polling despite read error - desk might still be moving
+                    if poll_count > 5 {
+                        log::error!("Multiple height read failures, aborting");
+                        return Err(anyhow!("Failed to read desk height: {}", e));
+                    }
+                }
             }
 
             sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
         }
 
         Ok(())
+    }
+
+    /// Move desk manually using Up/Down commands
+    async fn move_manually(&self, target_mm: u16, direction: MovementCommand) -> Result<()> {
+        log::info!("Starting manual movement using {:?} command", direction);
+
+        const TOLERANCE_MM: u16 = 5;
+        const MAX_WAIT_SECS: u64 = 60;
+        const POLL_INTERVAL_MS: u64 = 100;
+
+        let start = std::time::Instant::now();
+        let mut poll_count = 0;
+        let mut last_height = self.get_height().await?;
+
+        loop {
+            poll_count += 1;
+
+            if start.elapsed().as_secs() > MAX_WAIT_SECS {
+                self.send_command(MovementCommand::Stop).await?;
+                log::error!("Manual movement timeout after {} seconds", MAX_WAIT_SECS);
+                return Err(anyhow!("Timeout during manual movement"));
+            }
+
+            let current = self.get_height().await?;
+            let diff = if current > target_mm {
+                current - target_mm
+            } else {
+                target_mm - current
+            };
+
+            if poll_count <= 3 || poll_count % 20 == 0 {
+                log::info!("Manual move poll #{}: Current: {}mm, Target: {}mm, Diff: {}mm",
+                           poll_count, current, target_mm, diff);
+            }
+
+            if diff <= TOLERANCE_MM {
+                self.send_command(MovementCommand::Stop).await?;
+                log::info!("Manual movement complete: {}mm (target: {}mm)", current, target_mm);
+                return Ok(());
+            }
+
+            // Check if we're still moving
+            if (current as i32 - last_height as i32).abs() < 2 && poll_count > 10 {
+                // Desk has stopped moving but hasn't reached target
+                log::warn!("Desk stopped moving at {}mm, target was {}mm", current, target_mm);
+                self.send_command(MovementCommand::Stop).await?;
+                return Err(anyhow!("Desk stopped before reaching target height"));
+            }
+
+            last_height = current;
+
+            // Send movement command periodically (every ~300ms)
+            if poll_count % 3 == 1 {
+                self.send_command(direction).await?;
+            }
+
+            sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
+        }
     }
 
     /// Stop desk movement

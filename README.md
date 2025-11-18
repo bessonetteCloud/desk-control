@@ -266,6 +266,44 @@ Heights are transmitted in 0.1mm units (e.g., 10500 = 1050mm = 105cm).
 - If movement commands timeout, try stopping and restarting the desk
 - Check that you're within Bluetooth range (~10 meters)
 
+### Connection Aborted ("le-connection-abort-by-local")
+
+If you see errors about connection being aborted by local adapter:
+
+1. **Try pairing the desk first** using your system's Bluetooth settings:
+   ```bash
+   # On Linux, use bluetoothctl
+   bluetoothctl
+   scan on
+   # Wait for your desk to appear (e.g., "Desk 8462")
+   pair XX:XX:XX:XX:XX:XX
+   trust XX:XX:XX:XX:XX:XX
+   exit
+   ```
+
+2. **Run with elevated permissions** (Linux only):
+   ```bash
+   # Option 1: Run with sudo (temporary fix)
+   sudo ./desk-control
+
+   # Option 2: Set capabilities (permanent fix)
+   sudo setcap 'cap_net_raw,cap_net_admin+eip' ./desk-control
+   ```
+
+3. **Check BlueZ configuration** (Linux):
+   - Ensure BlueZ experimental features are enabled if needed
+   - Some desks require pairing before connection will succeed
+
+4. **Restart Bluetooth service**:
+   ```bash
+   sudo systemctl restart bluetooth
+   ```
+
+5. **Check for conflicts**:
+   - Ensure no other application is connected to the desk
+   - Try unpairing and re-pairing the desk
+   - Disable and re-enable Bluetooth on your computer
+
 ## Development
 
 ### Running Tests

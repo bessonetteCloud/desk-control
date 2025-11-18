@@ -20,6 +20,7 @@ pub trait MenuCallback: Send + Sync {
 pub struct TrayApp {
     _tray_icon: TrayIcon,
     callback: Arc<dyn MenuCallback>,
+    current_height_item: MenuItem,
     preset_items: Vec<(DrinkSize, MenuItem)>,
     configure_desk_item: MenuItem,
     configure_presets_item: MenuItem,
@@ -35,6 +36,10 @@ impl TrayApp {
         // Add title (disabled item)
         let title = MenuItem::new("Desk Control", false, None);
         menu.append(&title)?;
+
+        // Add current height display (disabled item)
+        let current_height_item = MenuItem::new("Current: --cm", false, None);
+        menu.append(&current_height_item)?;
 
         menu.append(&PredefinedMenuItem::separator())?;
 
@@ -82,11 +87,18 @@ impl TrayApp {
         Ok(Self {
             _tray_icon: tray_icon,
             callback,
+            current_height_item,
             preset_items,
             configure_desk_item,
             configure_presets_item,
             quit_item,
         })
+    }
+
+    /// Update the current height display in the menu
+    pub fn update_current_height(&self, height_cm: f32) {
+        let text = format!("Current: {:.1}cm", height_cm);
+        self.current_height_item.set_text(text);
     }
 
     /// Process menu events (call this in your event loop)

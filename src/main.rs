@@ -31,14 +31,21 @@ impl AppState {
         let mut controller = self.desk_controller.lock().await;
 
         if controller.is_none() {
-            log::info!("Connecting to desk...");
+            log::info!("No active desk connection, initiating new connection...");
             let config = self.config.lock().await;
             let desk_address = config.desk_address.clone();
             drop(config); // Release lock before async operation
 
+            if desk_address.is_none() {
+                return Err(anyhow::anyhow!("No desk configured. Please configure a desk first."));
+            }
+
+            log::info!("Connecting to desk at address: {:?}", desk_address);
             let desk = DeskController::connect(desk_address).await?;
             *controller = Some(desk);
-            log::info!("Connected to desk successfully");
+            log::info!("Desk connection established and cached");
+        } else {
+            log::info!("Using existing desk connection (no scan needed)");
         }
 
         Ok(())
@@ -46,21 +53,37 @@ impl AppState {
 
     /// Move desk to a specific preset
     async fn move_to_preset(&self, preset: DrinkSize) -> Result<()> {
+        log::info!("=== Starting move to {} preset ===", preset.name());
+
         self.ensure_connected().await?;
 
         let config = self.config.lock().await;
         let height_mm = config.get_preset(preset);
         drop(config);
 
-        log::info!("Moving to {} preset ({}mm)", preset.name(), height_mm);
+        log::info!("Target height: {}mm ({:.1}cm)", height_mm, height_mm as f32 / 10.0);
 
         let controller = self.desk_controller.lock().await;
         if let Some(desk) = controller.as_ref() {
+            log::info!("Sending move command to desk...");
             desk.move_to_height(height_mm).await?;
-            log::info!("Successfully moved to {} preset", preset.name());
+            log::info!("=== Successfully moved to {} preset ===", preset.name());
+        } else {
+            log::error!("Controller was None after ensure_connected succeeded - this should not happen!");
+            return Err(anyhow::anyhow!("Desk controller unavailable"));
         }
 
         Ok(())
+    }
+
+    /// Get current desk height in millimeters (returns None if not connected)
+    async fn get_current_height(&self) -> Option<u16> {
+        let controller = self.desk_controller.lock().await;
+        if let Some(desk) = controller.as_ref() {
+            desk.get_height().await.ok()
+        } else {
+            None
+        }
     }
 }
 
@@ -74,12 +97,19 @@ impl MenuCallback for AppMenuCallback {
     fn on_preset_selected(&self, preset: DrinkSize) {
         let state = Arc::clone(&self.state);
         self.runtime.spawn(async move {
-            if let Err(e) = state.move_to_preset(preset).await {
-                log::error!("Failed to move to preset {}: {}", preset.name(), e);
-                show_error_dialog(&format!(
-                    "Failed to move desk: {}",
-                    e
-                ));
+            log::info!("Moving desk to {} preset", preset.name());
+            match state.move_to_preset(preset).await {
+                Ok(_) => {
+                    log::info!("Successfully moved to {} preset", preset.name());
+                    show_info_dialog(&format!("Desk moved to {} preset", preset.name()));
+                }
+                Err(e) => {
+                    log::error!("Failed to move to preset {}: {}", preset.name(), e);
+                    show_error_dialog(&format!(
+                        "Failed to move desk: {}",
+                        e
+                    ));
+                }
             }
         });
     }
@@ -149,12 +179,17 @@ async fn scan_and_configure_desk(state: Arc<AppState>) -> Result<()> {
     let mut config = state.config.lock().await;
     config.desk_address = Some(address.clone());
     config.save()?;
+    drop(config);
 
     log::info!("Configured desk: {}", address);
 
-    // Clear existing controller to force reconnect
+    // Connect to the desk and keep the connection alive for future use
+    log::info!("Establishing connection to configured desk...");
+    let new_controller = DeskController::connect(Some(address)).await?;
     let mut controller = state.desk_controller.lock().await;
-    *controller = None;
+    *controller = Some(new_controller);
+
+    log::info!("Desk connected and ready to use");
 
     Ok(())
 }
@@ -269,10 +304,14 @@ fn main() -> Result<()> {
     // Create application state
     let state = Arc::new(AppState::new(config.clone()));
 
+    // Clone state and runtime for callback (they will be moved)
+    let state_for_callback = Arc::clone(&state);
+    let runtime_for_callback = Arc::clone(&runtime);
+
     // Create menu callback
     let callback = Arc::new(AppMenuCallback {
-        state,
-        runtime,
+        state: state_for_callback,
+        runtime: runtime_for_callback,
     });
 
     // Create tray app
@@ -296,6 +335,34 @@ fn main() -> Result<()> {
             glib::ControlFlow::Continue
         });
 
+        // Update current height display periodically
+        let tray_app_height = Rc::clone(&tray_app_rc);
+        let state_height = Arc::clone(&state);
+        let runtime_height = Arc::clone(&runtime);
+
+        glib::timeout_add_local(Duration::from_secs(5), move || {
+            let state = Arc::clone(&state_height);
+            let tray_app = Rc::clone(&tray_app_height);
+
+            // Spawn async task to get height (don't capture Rc in the async block)
+            let (tx, rx) = std::sync::mpsc::channel();
+            runtime_height.spawn(async move {
+                if let Some(height_mm) = state.get_current_height().await {
+                    let _ = tx.send(height_mm);
+                }
+            });
+
+            // Schedule UI update on main thread using received height
+            glib::timeout_add_local_once(Duration::from_millis(100), move || {
+                if let Ok(height_mm) = rx.try_recv() {
+                    let height_cm = height_mm as f32 / 10.0;
+                    tray_app.borrow().update_current_height(height_cm);
+                }
+            });
+
+            glib::ControlFlow::Continue
+        });
+
         log::info!("Starting GTK main loop");
         gtk::main();
         Ok(())
@@ -303,9 +370,30 @@ fn main() -> Result<()> {
 
     #[cfg(not(target_os = "linux"))]
     {
+        use std::time::Instant;
+
         // On other platforms, use simple polling loop
+        let mut last_height_update = Instant::now();
+
         loop {
             tray_app.process_events();
+
+            // Update height display every 5 seconds
+            if last_height_update.elapsed() >= Duration::from_secs(5) {
+                last_height_update = Instant::now();
+
+                let state_clone = Arc::clone(&state);
+                let height_future = async move {
+                    state_clone.get_current_height().await
+                };
+
+                if let Some(height_mm) = runtime.block_on(height_future) {
+                    let height_cm = height_mm as f32 / 10.0;
+                    tray_app.update_current_height(height_cm);
+                    log::debug!("Updated current height: {:.1}cm", height_cm);
+                }
+            }
+
             std::thread::sleep(Duration::from_millis(100));
         }
     }
